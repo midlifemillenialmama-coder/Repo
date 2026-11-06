@@ -19,7 +19,12 @@ import { AnalysisCapabilityUnavailableError } from "../domain/analysisErrorCore.
 
 import { launcherIdentityFailure } from "./ProcessOwnershipIdentity.js";
 import { descendantsOf, liveProcesses } from "./ProcessOwnershipProcessTree.js";
-import { execFileOutput } from "./ExecFileOutput.js";
+import {
+  execFileOutput,
+  execFileOutputFailure,
+  HOST_SPAWN_CAPACITY_CODES,
+  spawnCapacityExhausted,
+} from "./ExecFileOutput.js";
 import {
   createDarwinProcessRunTokenReader,
   type DarwinProcessReaderCompiler,
@@ -1481,6 +1486,17 @@ export const createSystemProcessOwnershipHost = (
             throw new ProcessAdmissionError("current_process_unreported");
         } catch (cause: unknown) {
           if (isExpectedAbort(cause, signal)) throw cause;
+          const failure = execFileOutputFailure(cause);
+          if (
+            spawnCapacityExhausted(failure) ||
+            (typeof cause === "object" &&
+              cause !== null &&
+              typeof Reflect.get(cause, "code") === "string" &&
+              HOST_SPAWN_CAPACITY_CODES.has(
+                Reflect.get(cause, "code") as string,
+              ))
+          )
+            throw cause;
           throw new LinuxOwnedProcessPrerequisiteError(cause);
         }
       }
@@ -1668,9 +1684,26 @@ export class LinuxOwnedProcessPrerequisiteError extends AnalysisCapabilityUnavai
     super("process-ownership", "prepare_owned_process", reason, {
       cause,
       userMessage: reason,
+      remediationAction:
+        "Install your distribution's procps or procps-ng package, or put a procps-compatible ps on REA's PATH, then retry.",
     });
   }
 }
+
+/** Actionable remediation for Darwin process ownership inspection preparation failure. */
+export const DARWIN_PROCESS_OWNERSHIP_REMEDIATION =
+  "Check the selected Xcode or Command Line Tools and Swift compiler configuration, then restart REA and retry.";
+
+/** Actionable recovery guidance for process ownership admission failures. */
+export const processOwnershipAdmissionRecovery = (code: string): string => {
+  if (code === "identity_snapshot_unavailable")
+    return "Check host process churn and ensure REA has permission to inspect /proc entries for running processes, then retry once process state settles.";
+  if (code === "current_process_unreported")
+    return "Ensure the host process table reports the running REA process under /proc or ps, then retry.";
+  if (code === "baseline_unavailable")
+    return "Ensure process ownership inspection is supported on the host platform before launching captured children.";
+  return "Verify host process ownership inspection prerequisites before retrying.";
+};
 
 /** Prepare native token inspection before REA launches a captured child. */
 export const prepareProcessOwnershipInspection = async (
