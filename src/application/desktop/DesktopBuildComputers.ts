@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import type { BuildSource } from "../../domain/desktop/appBuild.js";
+import type {
+  BuildRequest,
+  BuildSource,
+} from "../../domain/desktop/appBuild.js";
 import {
   driverCall,
   type ComputerAction,
@@ -30,11 +33,15 @@ import {
   type ComputerRelease,
 } from "../../desktop/AgentEnvComputerHelper.js";
 import type { PrivateRuntimeRoot } from "../../process/PrivateRuntimeRoot.js";
+import type { ProgressReporter } from "../ProgressReporter.js";
 import {
   BuildComputerActionLog,
   type ReadonlyActionLog,
 } from "./DesktopBuildActionLog.js";
 import { writeRequestBundle } from "./DesktopBuildBundle.js";
+import { DesktopBuildCapture } from "./DesktopBuildCapture.js";
+import { DesktopBuildTurns } from "./DesktopBuildTurns.js";
+import { DesktopBuildWitness } from "./DesktopBuildWitness.js";
 
 const START = "start_build_computer";
 const ACT = "act_on_build_computer";
@@ -45,6 +52,14 @@ export interface ForwardedResult<Value> {
   readonly value: Value;
   readonly content: DriverResult["content"];
 }
+
+/** What an action answers: its place in the log and the driver's structured result. */
+type Acted = ForwardedResult<{
+  readonly computer_id: string;
+  readonly action: ComputerAction;
+  readonly action_index: number;
+  readonly result: Readonly<Record<string, JsonValue>> | null;
+}>;
 
 /** What later stages read of a live build computer: its action log and recording hooks. */
 export interface BuildComputerSession {
@@ -62,7 +77,19 @@ interface HeldComputer {
   readonly release: (() => Promise<ComputerRelease>) | undefined;
   readonly workspace: PrivateRuntimeRoot | undefined;
   readonly actions: BuildComputerActionLog;
+  /** REA's capture of the app and the task's witness, on a live computer. */
+  readonly steps: BuildComputerSteps | undefined;
+  /** Every action, step and close on the computer takes its turn here. */
+  readonly turns: DesktopBuildTurns;
   closing: boolean;
+}
+
+/** What the build step tools work on: a live computer, its capture, its witness and the turns they take. */
+export interface BuildComputerSteps {
+  readonly computer: AgentEnvComputer;
+  readonly capture: DesktopBuildCapture;
+  readonly witness: DesktopBuildWitness;
+  readonly turns: DesktopBuildTurns;
 }
 
 /** A start still in progress, which shutdown cancels and joins. */
@@ -90,6 +117,54 @@ const failure = (
     userMessage: cause instanceof Error ? cause.message : String(cause),
     cause,
   });
+};
+
+/**
+ * Restore the app's data to its seed with `data/reset`, which relaunches the
+ * app, and wait until the computer reports ready again; a screenshot after,
+ * when asked.
+ */
+const reset = async (
+  computer: AgentEnvComputer,
+  fields: Readonly<Record<string, JsonValue>>,
+  signal: AbortSignal,
+): Promise<DriverResult> => {
+  const startedAt = Date.now();
+  await computer.appData("data/reset", signal);
+  await computer.waitUntilReady(signal);
+  const ready = { reset: true, ready_ms: Date.now() - startedAt };
+  if (fields.screenshot !== true)
+    return { isError: false, content: [], structured: ready };
+  const shot = await computer.callTool("computer_screenshot", {}, signal);
+  return {
+    isError: shot.isError,
+    content: shot.content,
+    structured: { ...ready, frame: shot.structured },
+  };
+};
+
+/** A live computer as REA holds it: its action log, its capture and witness, and the turns all its calls take. */
+const liveComputer = (
+  computer: AgentEnvComputer,
+  workspace: PrivateRuntimeRoot | undefined,
+  request: BuildRequest | undefined,
+): HeldComputer => {
+  const actions = new BuildComputerActionLog();
+  const turns = new DesktopBuildTurns();
+  return {
+    computer,
+    release: () => computer.close(),
+    workspace,
+    actions,
+    steps: {
+      computer,
+      capture: new DesktopBuildCapture(computer, request),
+      witness: new DesktopBuildWitness(computer, actions),
+      turns,
+    },
+    turns,
+    closing: false,
+  };
 };
 
 /**
@@ -153,6 +228,7 @@ export class DesktopBuildComputers {
       readonly screenshot?: ScreenshotOptions | undefined;
     },
     signal: AbortSignal,
+    progress?: ProgressReporter,
   ): Promise<
     Result<
       ForwardedResult<{
@@ -171,7 +247,11 @@ export class DesktopBuildComputers {
         }),
       );
     const stop = new AbortController();
-    const settled = this.#start(input, AbortSignal.any([signal, stop.signal]));
+    const settled = this.#start(
+      input,
+      AbortSignal.any([signal, stop.signal]),
+      progress,
+    );
     const pending = { settled, stop };
     this.#starts.add(pending);
     try {
@@ -184,6 +264,7 @@ export class DesktopBuildComputers {
   async #start(
     input: Parameters<DesktopBuildComputers["start"]>[0],
     signal: AbortSignal,
+    progress: ProgressReporter | undefined,
   ): ReturnType<DesktopBuildComputers["start"]> {
     const { source } = input;
     let target: {
@@ -209,26 +290,41 @@ export class DesktopBuildComputers {
         signal,
         operation: START,
       });
-      computer = await AgentEnvComputer.connect(helper, signal);
+      const connected = await AgentEnvComputer.connect(
+        helper,
+        signal,
+        progress === undefined
+          ? undefined
+          : (message) => {
+              void progress
+                .report({ phase: START, completed: 0, total: null, message })
+                .catch(() => undefined);
+            },
+      );
+      computer = connected.computer;
       const shot = driverCall("screenshot", input.screenshot ?? {});
       if (!shot.ok) throw new TypeError("screenshot options are its own");
-      const taken = await computer.callTool(
-        shot.value.tool,
-        shot.value.arguments,
-        signal,
+      // The caller's region, format or quality apply to the drawn frame.
+      const taken =
+        Object.keys(shot.value.arguments).length === 0
+          ? connected.frame
+          : await computer.callTool(
+              shot.value.tool,
+              shot.value.arguments,
+              signal,
+            );
+      this.#computers.set(
+        id,
+        liveComputer(
+          computer,
+          target.workspace,
+          source.kind === "request" ? source : undefined,
+        ),
       );
-      const live = computer;
-      this.#computers.set(id, {
-        computer: live,
-        release: () => live.close(),
-        workspace: target.workspace,
-        actions: new BuildComputerActionLog(),
-        closing: false,
-      });
       return ok({
         value: {
           computer_id: id,
-          sandbox_id: live.sandboxId,
+          sandbox_id: computer.sandboxId,
           environment: target.name,
           screenshot: taken.isError ? null : taken.structured,
         },
@@ -247,6 +343,8 @@ export class DesktopBuildComputers {
               : () => owner.release(),
         workspace: target.workspace,
         actions: new BuildComputerActionLog(),
+        steps: undefined,
+        turns: new DesktopBuildTurns(),
         closing: true,
       });
       const release = await this.#retire(id);
@@ -258,17 +356,7 @@ export class DesktopBuildComputers {
   async act(
     input: ComputerActionInput,
     signal: AbortSignal,
-  ): Promise<
-    Result<
-      ForwardedResult<{
-        readonly computer_id: string;
-        readonly action: ComputerAction;
-        readonly action_index: number;
-        readonly result: Readonly<Record<string, JsonValue>> | null;
-      }>,
-      AnalysisError
-    >
-  > {
+  ): Promise<Result<Acted, AnalysisError>> {
     const { computer_id: id, action, ...fields } = input;
     const held = this.#computers.get(id);
     const computer = held?.computer;
@@ -291,18 +379,31 @@ export class DesktopBuildComputers {
           ],
         ),
       );
-    const logged = held.actions.begin(
-      action,
-      call.value.tool,
-      call.value.arguments,
+    return held.turns.run(ACT, signal, (turn) =>
+      this.#forward(held, computer, { id, action, ...call.value }, turn),
     );
+  }
+
+  /** Log and send one action on its turn, so the log holds no action still pending while another call runs. */
+  async #forward(
+    held: HeldComputer,
+    computer: AgentEnvComputer,
+    call: {
+      readonly id: string;
+      readonly action: ComputerAction;
+      readonly tool: string;
+      readonly arguments: Readonly<Record<string, JsonValue>>;
+    },
+    signal: AbortSignal,
+  ): Promise<Result<Acted, AnalysisError>> {
+    const { id, action } = call;
+    const logged = held.actions.begin(action, call.tool, call.arguments);
     let result: DriverResult;
     try {
-      result = await computer.callTool(
-        call.value.tool,
-        call.value.arguments,
-        signal,
-      );
+      result =
+        action === "reset"
+          ? await reset(computer, call.arguments, signal)
+          : await computer.callTool(call.tool, call.arguments, signal);
     } catch (cause: unknown) {
       logged.settle("failed");
       return err(failure(ACT, cause, signal));
@@ -342,8 +443,11 @@ export class DesktopBuildComputers {
       AnalysisError
     >
   > {
-    if (!this.#computers.has(id)) return err(unknownComputer(CLOSE));
-    const release = await this.#retire(id);
+    const held = this.#computers.get(id);
+    if (held === undefined) return err(unknownComputer(CLOSE));
+    held.closing = true;
+    // Tear down only once the call it cancels has ended; the calls waiting are refused.
+    const release = await held.turns.close(() => this.#retire(id));
     return release.verified
       ? ok({ computer_id: id, teardown: release.teardown })
       : err(
@@ -397,6 +501,12 @@ export class DesktopBuildComputers {
         failures,
         "Build computer teardown is incomplete",
       );
+  }
+
+  /** A live computer's capture and witness, for the build step tools; undefined for an unknown or closing id. */
+  steps(id: string): BuildComputerSteps | undefined {
+    const held = this.#computers.get(id);
+    return held === undefined || held.closing ? undefined : held.steps;
   }
 
   /** A live computer's action log and recording hooks, for the witness. */
