@@ -42,26 +42,112 @@ operation `describe_desktop_application_task` and predicate type
   database is compared by its rows, since its hash leaves out the `-wal`
   file. Text changes list each line
   once and add `line_counts`, the lines found at both ends whose number of
-  occurrences changed. Views appear only for the files the suggestions cover,
-  with arrays past 200 items and strings past 2,000 characters cut
+  occurrences changed. An XML file's change names its members by the
+  [selectors](#pointers-and-selectors) checks use, as an archive's already
+  does, and by position only where nothing names a member or where only the
+  members' order changed. Views appear only for the files the suggestions
+  cover, with arrays past 200 items and strings past 2,000 characters cut
   (`view_cut`).
+- `values`, in each of those files: the values its change added, changed
+  and removed, each with the `pointer` a check names it by, its `kind`
+  (`added`, `changed` or `removed`), and `before` and `after`: the scalar, an
+  element as compact XML or a JSON value as compact JSON, cut at 600
+  characters, and null at the end that lacks it. A value only position
+  reaches has `note: "by_position"`, and its pointer cannot go into a check;
+  noise a document's app writes as it saves has `view_state`, `renumbered`,
+  `volatile` or `timestamp` (see `task`). `refers_to` names up to three other
+  elements a value equals the `key` or `id` of, with the `attribute` holding
+  it, as HomeBank's `category="44"` names `<cat key="44" name="Groceries"/>`;
+  where several elements share that key, the one whose tag shares the
+  attribute's stem, as `payee` and `<pay>`. What a check can name comes first,
+  then what only position reaches, then noise. A file lists at most 20 values
+  and 8 KB, the draft 24 KB, and `values_cut` says when a limit left some
+  out. Values cover XML, archives, JSON and key files; a text or SQLite file's
+  change and suggestions already carry its lines and rows.
 - `task`: a draft with the name `change`, a placeholder prompt the export
   refuses, and suggested checks derived from the net change of the files with
   role `document`, or of the app's own state files when no document changed.
   A text file gains `lines_present` for its new lines and `lines_absent` for
   lines it lost (when either is at most ten), and `line_count` for each line
-  holding a letter whose count changed; JSON, XML and key files gain
+  holding a letter whose count changed; JSON and key files gain
   `value_equals` and `value_absent` by pointer; SQLite tables gain rows added,
-  changed and removed, by primary key, and their new row count. A zip archive
-  gains checks inside the JSON, key file and XML views of its entries, by
-  [selectors](#pointers-and-selectors) and never through an element by
-  position: an element added whole that it exists, one removed whole that it
-  is absent, then values changed, added and removed, an entry or a JSON value
-  added whole through its members, and an empty array or object as it is.
-  Values that look like a time the app stamps are left out.
+  changed and removed, by primary key, and their new row count. An XML file,
+  and the JSON, key file and XML views of a zip archive's entries, gain checks
+  by [selectors](#pointers-and-selectors) and never through an element by
+  position: in XML, first [`text_equals`](#whole-text) for each element whose
+  text changed, then elements added or removed whole, then values changed,
+  added and removed, an entry or a JSON value added whole through its
+  members, and an empty array or object as it is.
+  - A selector names a member by its tag, then by its identifiers (`name`,
+    `id`, `xid`, `xml:id`), then by one other attribute, a name-like key such
+    as Scribus's `ANNAME` or `inkscape:label`, a worded value or an integer of
+    up to five digits first, then by two such attributes together, as
+    Gnumeric's cells by `[@Col=3][@Row=2]`, and last by a coordinate, a long
+    number or a token, such as `XPOS` or `ItemID`. An element with
+    identifiers is named by those alone. The selector must name the member
+    alone at both ends, with the same values.
+  - The text check names the paragraph rather than a run inside it: it goes
+    up from an element sitting in its parent's text, and from one named by
+    its tag or position alone to the nearest ancestor named by an attribute,
+    as AbiWord's `p` by its `xid`; where no attribute names one, to the
+    nearest ancestor within three levels its tag names with no step by
+    position, as MuseScore's `VBox` around untitled `<Text>` elements. The
+    text nodes and runs inside it get no other check. A decimal that is an
+    element's only text, such as a spreadsheet cell's, is checked by its
+    number instead.
+  - An element added to a list, where another element of its tag is at
+    either end, gets a `value_equals` for each of its attributes, best ranked
+    first, at most six, leaving out its selector's attributes, identifiers,
+    times, volatile values and view state, as HomeBank's new `<ope>` gets its
+    `amount`, `category` and `payee`. Any other element added whole gets a
+    check that it exists. A record only position names, such as Osmo's
+    `<record>` of fields, also gets a `text_contains` for each new field of
+    three or more characters, at most five, at the nearest ancestor a check
+    can name, each absent from that ancestor's text at the seed.
+  - A decimal written as text, such as `146.83`, is suggested as a number
+    with `tolerance: 0.001`, unless the seed's value is that close too.
+  - In a document, noise leaves the suggestions when the file's change holds
+    anything else: view state, which a tag or attribute on the way names
+    (the cursor, a selection, scrolling, zoom, the viewport, windows,
+    splitters, Inkscape's `namedview`, a save's history, edit time
+    or last-saved time); an attribute ending in `ID` or `Id`, or an `rsid`,
+    that the app renumbered, with everything else in its element, as
+    Gnumeric empties a formula cell whose shared expression it renumbers;
+    and volatile values, UUIDs and epoch times. When the change holds
+    nothing else, up to three such checks stay and a note flags them. The
+    app's own state is not filtered, since a view setting may be its task.
+  - Whitespace an app lays out between elements is not checked, and values
+    that look like a time the app stamps, in ISO 8601 or as C's `asctime`
+    writes it (`Thu Nov  5 09:20:31 2026`), are left out; such a time never
+    makes its ancestor's whole text a check.
+- `guards`: checks an author may add to show the edit left the rest alone,
+  kept out of `task.checks`, with ids `guard-1` and on: for each suggested
+  `value_equals` or `text_equals` on a member of a list, the same field on
+  up to two like siblings, nearest first, at its seed value, which the end
+  holds too; at most four a file. They pass on the seed, which the export
+  allows, since one check failing there is enough.
+- `notes`: why `files` is empty, or why a file's suggestions are thin. Each
+  note has a `code` and a `message`. For a draft with no files:
+  `no_change` when no file under the home changed between the two
+  checkpoints; `unowned_changes` when files changed but none under the owned
+  paths, with up to five of them in `files`, each with its home path and role
+  (desktop services' files last), and how many more in `more`; and
+  `no_document` when no file has the document role, as when no window title
+  shows the file's name. A capture again with `--state-path` naming the
+  file, or `state_paths` on a build computer's `start_build_capture`, makes
+  it the app's. For a drafted file, named in `file`: `by_position` when
+  changes reach their element only by position, the tags no attribute names
+  alone in `elements`, or when only the elements' order changed;
+  `view_state_only` when every change is noise, the checks kept in
+  `pointers`; `long_text` when an element's text changed past the 2,000
+  characters a text check compares, the elements in `pointers`; `cut_view`
+  when the views hold only part of the file; and `unreadable_view` when no
+  check can read it, as a compressed document REA reads as binary.
 
 The suggestions are a starting point. Keep the ones that say what the user
-did; drop the ones that only follow from how the app saves its file. A LibreCAD
+did; drop the ones that only follow from how the app saves its file. Read
+`values` for what changed and its pointers, and `refers_to` for what a number
+stands for, before writing the prompt and any check of your own. A LibreCAD
 capture that added four holes to a drawing rewrote it from DXF R12 to DXF 2007,
 so most of its lines changed; the draft suggests counts of `SECTION`, `ENDSEC`
 and `CIRCLE`, and only `CIRCLE` going from 5 to 9 is the user's change.
@@ -99,6 +185,8 @@ file, in the shapes of the state view.
 | `line_count`    | `exact` or `contains`; `equals`, `at_least` or `at_most`     | The number of lines equal to `exact`, or holding `contains`, compares so |
 | `value_equals`  | `pointer`, `value`; optional `tolerance`                     | The pointer names a value equal to `value`, or within `tolerance` of it  |
 | `value_absent`  | `pointer`                                                    | The pointer names no value                                               |
+| `text_equals`   | `pointer`, `value`; optional `normalize_whitespace`          | The XML element's [whole text](#whole-text) equals `value`               |
+| `text_contains` | `pointer`, `value`; optional `normalize_whitespace`          | The XML element's whole text holds `value`                               |
 | `row_present`   | `table`, `where`                                             | A row of the SQLite table has every column in `where` equal              |
 | `row_absent`    | `table`, `where`                                             | No row does                                                              |
 | `row_count`     | `table`; optional `where`; `equals`, `at_least` or `at_most` | The number of rows, or of rows matching `where`, compares so             |
@@ -109,7 +197,8 @@ The rules both evaluators follow:
   `value_absent` and `row_absent` pass on it and a count is 0.
 - A file that has no view (binary, over the read limit, or unreadable) fails
   every check but `file_present` and `file_absent`. Line checks need a text
-  view and row checks a SQLite view; another format fails.
+  view, row checks a SQLite view and text checks an XML view, in a file or an
+  archive entry; another format fails.
 - Equality is JSON equality: numbers by value, never a boolean for a number,
   objects by their keys whatever their order, arrays in order.
 - Pointers follow RFC 6901 (`~1` for `/`, `~0` for `~`) and must start with
@@ -127,9 +216,12 @@ The rules both evaluators follow:
   no regular expressions: a pattern run on what the agent wrote could stall
   the verifier, and JavaScript and Python read some patterns differently.
 - A check decided by what a view leaves out (`lines_absent`, `value_absent`,
-  `row_absent`, the counts, and `value_equals` of a whole object or array)
-  fails when that view is truncated; a check satisfied by what the view holds
-  is decided on it.
+  `row_absent`, the counts, `value_equals` of a whole object or array, and
+  the text checks of an element) fails when that view is truncated; a check
+  satisfied by what the view holds is decided on it. An element's text is not:
+  the reader may have dropped text from between the runs it kept, so
+  `text_contains` fails on a truncated view even where the kept runs hold its
+  value. A text node or attribute value is whole, and decided.
 
 The export refuses, naming the check, a file outside the owned paths, a file
 spelled with a leading slash, `.` or `..`, a pointer into a file that is text
@@ -137,9 +229,11 @@ at the seed, as the bundle ships it, or at the end checkpoint, the empty
 pointer (the whole file), a value that names the captured home, or the
 capture host's name or `user@host` anywhere (which the
 [export removes from the seed](desktop-application-export.md#host-name-and-user)), a
-`tolerance` with a value that is not a number, and a value that looks like an
-ISO 8601 date and time. Other volatile content, such as a counter the app
-bumps on every save, is for the author to leave out.
+`tolerance` with a value that is not a number, an empty `text_contains`
+value, or one of only whitespace with `normalize_whitespace`, and a value that
+looks like a date and time, in ISO 8601 or `asctime`'s form. Other volatile
+content, such as a
+counter the app bumps on every save, is for the author to leave out.
 
 ## Pointers and selectors
 
@@ -236,6 +330,48 @@ Inkscape writes a line of text as a `tspan` inside its `text` element, and
 Writer keeps a paragraph's style in `text:style-name`. A prefix is the one the
 document uses, so a check names the prefixes the app writes.
 
+## Whole text
+
+A text node is only the stretch of text between two pieces of markup, and
+apps split a paragraph into runs as they save it. AbiWord wraps text typed
+into a reopened document in `c` elements, so changing a time to `3:30` saves
+`<p>The team meeting starts at <c>3</c>:<c>30</c> in room 4.</p>`; Writer,
+which records revision IDs by default, writes text typed in one session as
+`text:span` runs. A `value_equals` on the paragraph's `children/0` then reads
+`"The team meeting starts at "` and fails. `text_equals` and `text_contains`
+read the element's whole text instead:
+
+```json
+{
+  "id": "time",
+  "kind": "text_equals",
+  "file": "Documents/meeting.abw",
+  "pointer": "/root/children/[name=section]/children/[name=p][@xid=3]",
+  "value": "The team meeting starts at 3:30 in room 4."
+}
+```
+
+- The pointer names an element of an XML view, in a file or in an archive
+  entry's `view`, or a text node or attribute value in one, whose text is its
+  value. Another format, a pointer into an archive outside an XML entry's
+  view, or any other value fails, an element's `name` and the `doctype`'s
+  fields included: they are strings of the view, not text of the document.
+- An element's text is XPath's `string()` of what the view keeps: every text
+  node in it and in its descendants, CDATA included, in document order, with
+  nothing between them. The view drops whitespace-only text between child
+  elements only in an element that holds no other text, outside
+  `xml:space="preserve"`, so the space between two runs of a paragraph is
+  part of its text. Elements that stand for characters, such as Writer's
+  `text:s`, `text:tab` and `text:line-break`, add none.
+- `text_equals` passes when the text equals `value` exactly, case and all;
+  `text_contains` when it holds `value`, as a time within a sentence, so the
+  check holds whatever the rest of the sentence says.
+- `normalize_whitespace: true` collapses each run of XML whitespace (space,
+  tab, carriage return, line feed) in both the text and `value` to one space
+  and trims both ends before comparing, as XPath's `normalize-space()` does,
+  for an app that reflows text or a value written across lines. A no-break
+  space is not whitespace there.
+
 ## Validation and export
 
 `rea export-desktop-application <capture> <directory> --task <task.json>`
@@ -245,9 +381,13 @@ capture host's name and user removed, and at the end checkpoint, the
 captured end state. Those are the capture's first and last checkpoints unless
 `--seed-checkpoint` and `--end-checkpoint` name others.
 It refuses a task whose every check passes on the seed, and a check that fails
-on the end state, with that check's reason. A capture yields one task, so the
-option is taken once. The result's `task` names the task, its number of checks
-and those that fail on the seed. A refused task writes no bundle.
+on the end state, with that check's reason. Only a failure on what the seed's
+view shows counts: a task whose checks fail on the seed only because a view
+could not be read or may have left out what they look for, such as a line past
+the 5,000 a text view keeps, is refused, naming each failure. A capture yields
+one task, so the option is taken once. The result's `task` names the task, its
+number of checks and those that fail on what the seed shows. A refused task
+writes no bundle.
 
 The bundle then holds, besides the app and `tasks/smoke.json`:
 
