@@ -1,0 +1,12 @@
+{
+  "version": "1.19.0",
+  "covered": [
+    "bash",
+    "claude-code",
+    "css",
+    "python",
+    "react",
+    "typescript"
+  ],
+  "updated": 1794267406.2700334
+}
